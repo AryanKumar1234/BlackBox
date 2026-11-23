@@ -182,13 +182,48 @@ jobs:
               s = s.replace("    flavorDimensions += ['main']\n",
                             "    namespace = '" + ns + "'\n    flavorDimensions += ['main']\n", 1)
 
+          # Inline applicationId/testApplicationId are invalid in a library.
+          s = re.sub(r"\b(?:test)?[aA]pplicationId\s*=?\s*['\"][^'\"]*['\"]", "", s)
+
           sp = block_span(s, 'productFlavors')
           if sp:
               start, brace, end = sp
               inner = s[brace + 1:end - 1]
-              inner = re.sub(r"(?m)^([ \t]*)(\w+)([ \t]*\{)[ \t]*\n",
-                             r"\1\2\3\n\1    dimension = 'main'\n", inner)
-              s = s[:brace + 1] + inner + s[end - 1:]
+              out, depth, i = [], 0, 0
+              while i < len(inner):
+                  ch = inner[i]
+                  out.append(ch)
+                  if ch == '{':
+                      if depth == 0:
+                          out.append(" dimension = 'main'\n")
+                      depth += 1
+                  elif ch == '}':
+                      depth -= 1
+                  i += 1
+              s = s[:brace + 1] + "".join(out) + s[end - 1:]
+
+          # 4c. Don't rasterize vector drawables to PNG (crashes on a 0x0 vector;
+          # unnecessary since minSdk >= 26).
+          s = re.sub(r"(?m)^[ \t]*.*generatedDensities.*\n", "", s)
+          if re.search(r"(?m)^[ \t]*defaultConfig[ \t]*\{", s):
+              s = re.sub(r"(?m)^([ \t]*defaultConfig[ \t]*\{)",
+                         r"\1\n        vectorDrawables.generatedDensities = []\n", s, count=1)
+          else:
+              s = s.replace("    flavorDimensions += ['main']\n",
+                            "    flavorDimensions += ['main']\n    defaultConfig {\n        vectorDrawables.generatedDensities = []\n    }\n", 1)
+
+          # 4d. Other DSL blocks/names removed in AGP 9.
+          for name in ["dexOptions", "jackOptions"]:
+              while True:
+                  sp = block_span(s, name)
+                  if not sp:
+                      break
+                  s = s[:sp[0]] + s[sp[2]:]
+          s = re.sub(r"\blintOptions\b", "lint", s)
+          s = re.sub(r"\bpackagingOptions\b", "packaging", s)
+          s = re.sub(r"\baaptOptions\b", "androidResources", s)
+          # Match :app's minSdk so nothing is rasterized / down-leveled.
+          s = re.sub(r"minSdk = \d+", "minSdk = 31", s)
 
           # 5. Removed dependency configurations.
           for old, new in [("androidTestCompile", "androidTestImplementation"),
@@ -196,6 +231,15 @@ jobs:
                            ("provided", "compileOnly"),
                            ("compile", "api")]:
               s = re.sub(r"(?m)^([ \t]*)" + old + r"(?=[ \t(])", r"\1" + new, s)
+
+          lib = os.path.join(os.environ["APP_DIR"], "lib", "build.gradle")
+          if os.path.exists(lib):
+              t = open(lib).read()
+              if "ndkVersion" not in t:
+                  t = re.sub(r"(compileSdk\s*=\s*\d+\n)",
+                             r"\1    ndkVersion = '27.2.12479018'\n", t, count=1)
+                  open(lib, "w").write(t)
+                  print("pinned ndkVersion in lib/build.gradle")
 
           open(p + ".orig", "w").write(orig)
           open(p, "w").write(s)
@@ -259,4 +303,3 @@ jobs:
           files: dist/*.apk
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
-          
