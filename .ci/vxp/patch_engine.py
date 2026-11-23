@@ -3,7 +3,7 @@
 
 Usage: patch_engine.py <engine-dir>
 
-Two root causes are addressed here:
+Three root causes are addressed here:
 
 1. The loading screen waited forever for a callback from the cloned process and
    called finish() from a binder thread. It is now finished on the UI thread,
@@ -14,6 +14,12 @@ Two root causes are addressed here:
    process to finish binding). Running it on the UI thread froze the loading
    screen so badly that nothing - not even the watchdog - could ever run.
    It is now called from a worker thread.
+
+3. ART refuses to load dex from a writable file when the process target SDK is
+   34 or higher. The cloned APKs are copies inside the host's writable private
+   storage, so a cloned app that targets a recent SDK died instantly with
+   "Attempt to load writable dex file". They are now marked read-only before
+   the class loader opens them.
 
 Unknown upstream text is reported and skipped; only the version bump is
 mandatory.
@@ -73,12 +79,12 @@ def swap(text, old, new, label):
 # ---------------------------------------------------------------- version bump
 gradle = root / "app" / "build.gradle"
 text = read(gradle)
-text = re.sub(r"versionCode\s+\d+", "versionCode 4", text, count=1)
-text = re.sub(r'versionName\s+"[^"]*"', 'versionName "1.3.0"', text, count=1)
+text = re.sub(r"versionCode\s+\d+", "versionCode 5", text, count=1)
+text = re.sub(r'versionName\s+"[^"]*"', 'versionName "1.4.0"', text, count=1)
 gradle.write_text(text, encoding="utf-8")
-if "versionCode 4" not in text or '"1.3.0"' not in text:
+if "versionCode 5" not in text or '"1.4.0"' not in text:
     sys.exit("version bump failed - app/build.gradle layout changed")
-note("app version -> 1.3.0 (4)")
+note("app version -> 1.4.0 (5)")
 
 # --------------------------------------------------- largeHeap for guest apps
 manifest = root / "app" / "src" / "main" / "AndroidManifest.xml"
@@ -178,6 +184,37 @@ if core.exists():
         core.write_text(text, encoding="utf-8")
 else:
     warnings.append("VirtualCore.java not found")
+
+# ------------------------------- Android 14+ requires read-only code files
+# ART refuses to load dex from a writable file when the process target SDK is 34
+# or higher ("Attempt to load writable dex file"). Cloned APKs live in the
+# host's private storage, which is writable, so a modern cloned app died while
+# its class loader was being built. The copies are marked read-only before every
+# launch, which makes ART load them normally.
+client = root / "lib" / "src" / "main" / "java" / "com" / "lody" / "virtual" / "client" / "VClientImpl.java"
+if client.exists():
+    text = read(client)
+    text, okc = swap(
+        text,
+        """        if (VASettings.ENABLE_IO_REDIRECT) {
+            startIOUniformer();
+        }""",
+        """        markCodeFilesReadOnly(info);
+        if (VASettings.ENABLE_IO_REDIRECT) {
+            startIOUniformer();
+        }""",
+        "VClientImpl: cloned code files marked read-only before loading",
+    )
+    if okc:
+        part = (here / "readonly.java.part").read_text(encoding="utf-8")
+        stripped = text.rstrip()
+        if not stripped.endswith("}"):
+            sys.exit("VClientImpl.java does not end with a closing brace")
+        text = stripped[:-1] + "\n" + part + "}\n"
+        note("VClientImpl: read-only helper injected")
+        client.write_text(text, encoding="utf-8")
+else:
+    warnings.append("VClientImpl.java not found")
 
 for w in warnings:
     note(f"WARN: {w}")
