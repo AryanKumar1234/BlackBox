@@ -29,9 +29,6 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install SDK platform + NDK
         shell: bash
         run: |
@@ -41,9 +38,19 @@ jobs:
           set +o pipefail
           NDK=27.2.12479018
 
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          # The ubuntu-latest runner ships with the Android SDK and
+          # cmdline-tools preinstalled (android-actions/setup-android is
+          # no longer needed and fails on the removed 'tools' package).
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM=$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n1)
+          echo "Using $SDKM"
 
-          install() { yes | sdkmanager --install "$@"; }
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+
+          install() { yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "$@"; }
 
           install "platform-tools" "ndk;$NDK"
 
