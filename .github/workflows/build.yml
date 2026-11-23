@@ -286,6 +286,28 @@ jobs:
                       open(fp, "w").write(n)
                       print("fixed Canvas save flags in", fname)
 
+          # 4h. aapt2 rejects a bare apostrophe in a string that isn't wrapped
+          # in double quotes; escape them (quoting protects most translations).
+          for root_dir, _dirs, files in os.walk(os.path.join(os.path.dirname(p), "res")):
+              if not os.path.basename(root_dir).startswith("values"):
+                  continue
+              for fname in files:
+                  if not fname.endswith(".xml"):
+                      continue
+                  fp = os.path.join(root_dir, fname)
+                  t = open(fp).read()
+
+                  def fix_apos(mm):
+                      inner = mm.group(2)
+                      if inner.startswith('"') and inner.endswith('"'):
+                          return mm.group(0)
+                      return mm.group(1) + re.sub(r"(?<!\\)'", r"\\'", inner) + mm.group(3)
+
+                  n = re.sub(r"(<string\b[^>]*>)(.*?)(</string>)", fix_apos, t, flags=re.S)
+                  if n != t:
+                      open(fp, "w").write(n)
+                      print("escaped apostrophes in", fp)
+
           lib = os.path.join(os.environ["APP_DIR"], "lib", "build.gradle")
           if os.path.exists(lib):
               t = open(lib).read()
