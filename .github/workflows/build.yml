@@ -21,14 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Maintained VirtualApp engine (the one VirtualXposed is built on),
-      # plus our own fixes for the endless "Opening ..." screen.
+      # Maintained VirtualApp engine (what VirtualXposed is built on) plus our
+      # own fixes for the endless "Opening ..." screen.
       - name: Fetch engine source and apply fixes
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/ISEKHON/VirtualApp.git src
           echo "engine HEAD: $(git -C src rev-parse HEAD)"
-          cp .ci/vxp/LoadingActivity.java src/app/src/main/java/io/virtualapp/home/LoadingActivity.java
           python3 .ci/vxp/patch_engine.py src
           grep -n 'versionCode\|versionName' src/app/build.gradle
 
