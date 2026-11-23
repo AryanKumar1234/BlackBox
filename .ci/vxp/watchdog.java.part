@@ -3,6 +3,7 @@
     private final android.os.Handler mOpenWatchdog =
             new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean mOpenWatchdogStopped;
+    private volatile boolean mLaunchInFlight;
 
     private void startOpenWatchdog(int userId) {
         final long launchedAt = android.os.SystemClock.elapsedRealtime();
@@ -22,7 +23,7 @@
                 }
                 if (alive && elapsed >= 3500L) {
                     // The cloned app is up - hand the screen over even if the
-                    // binder callback never arrived.
+                    // engine callback never arrived.
                     mOpenWatchdogStopped = true;
                     finish();
                     return;
@@ -48,6 +49,7 @@
                 + " (API " + android.os.Build.VERSION.SDK_INT + ")"
                 + "\ndevice: " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
                 + "\nprocess alive: " + processAlive
+                + "\nengine launch call still blocked: " + mLaunchInFlight
                 + "\n\n" + captureLogs(pkg);
         try {
             new android.support.v7.app.AlertDialog.Builder(this, R.style.Theme_AppCompat_DayNight_Dialog_Alert)
