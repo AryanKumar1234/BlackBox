@@ -33,11 +33,26 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install SDK platform + NDK
+        shell: bash
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;27.2.12479018" || \
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> $GITHUB_ENV
+          # sdkmanager prompts "Accept? (y/N)" for every license it hasn't
+          # seen, on install as well as on --licenses. Feed it "y" on stdin
+          # for every call, and don't let SIGPIPE from `yes` fail the step.
+          set +o pipefail
+          NDK=27.2.12479018
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          install() { yes | sdkmanager --install "$@"; }
+
+          install "platform-tools" "ndk;$NDK"
+
+          if ! install "platforms;android-37" "build-tools;37.0.0"; then
+            echo "API 37 packages unavailable, falling back to 36"
+            install "platforms;android-36" "build-tools;36.0.0"
+          fi
+
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK" >> "$GITHUB_ENV"
 
       - name: Set up Gradle (with caching)
         uses: gradle/actions/setup-gradle@v4
@@ -62,14 +77,13 @@ jobs:
               -keysize 2048 -validity 10000 -storepass "$PASS" -keypass "$PASS" \
               -dname "CN=VirtualXposed, O=VXP, C=US"
           fi
-          cat > VirtualApp/local.properties <<PROPS
-          sdk.dir=$ANDROID_SDK_ROOT
-          keystore.path=$KS
-          keystore.alias=$ALIAS
-          keystore.pwd=$PASS
-          keystore.alias_pwd=$PASS
-          PROPS
-          sed -i 's/^ *//' VirtualApp/local.properties
+          {
+            echo "sdk.dir=$ANDROID_SDK_ROOT"
+            echo "keystore.path=$KS"
+            echo "keystore.alias=$ALIAS"
+            echo "keystore.pwd=$PASS"
+            echo "keystore.alias_pwd=$PASS"
+          } > VirtualApp/local.properties
 
       - name: Build release APK
         working-directory: VirtualApp
@@ -105,3 +119,4 @@ jobs:
           files: dist/*.apk
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
+          
