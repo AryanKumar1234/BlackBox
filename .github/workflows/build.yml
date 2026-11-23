@@ -121,6 +121,72 @@ jobs:
             echo "keystore.alias_pwd=$PASS"
           } > "$APP_DIR/local.properties"
 
+      - name: Patch launcher/build.gradle for Gradle 9 / AGP 9
+        run: |
+          python3 - <<'PY'
+          import os, re
+
+          p = os.path.join(os.environ["APP_DIR"], "launcher", "build.gradle")
+          s = open(p).read()
+          orig = s
+
+          def block_span(text, name):
+              m = re.search(r'(?m)^[ \t]*' + name + r'[ \t]*\{', text)
+              if not m:
+                  return None
+              i = text.index('{', m.start())
+              depth = 0
+              for j in range(i, len(text)):
+                  if text[j] == '{':
+                      depth += 1
+                  elif text[j] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return m.start(), i, j + 1
+              return None
+
+          # 1. Drop the legacy buildscript block (old AGP 3.0.1 + jcenter()).
+          sp = block_span(s, 'buildscript')
+          if sp:
+              s = s[:sp[0]] + s[sp[2]:]
+
+          # 2. Plugins: application -> library, versions come from settings.gradle.
+          s = re.sub(r"(?m)^[ \t]*apply plugin:.*\n", "", s)
+          s = "plugins {\n    id 'com.android.library'\n    id 'com.google.protobuf'\n}\n\n" + s
+
+          # 3. Remove things that are invalid in a library / removed in AGP 9.
+          for pat in [r"jcenter\(\)", r"buildToolsVersion", r"testApplicationId",
+                      r"applicationId", r"targetSdkVersion", r"versionCode",
+                      r"versionName", r"flavorDimensions"]:
+              s = re.sub(r"(?m)^[ \t]*" + pat + r".*\n", "", s)
+
+          s = re.sub(r"compileSdkVersion\s+\S+", "compileSdk = 37", s)
+          s = re.sub(r"minSdkVersion\s+(\d+)", r"minSdk = \1", s)
+
+          # 4. Flavors: same dimension name as :app ('main') so they match by name.
+          s = re.sub(r"(?m)^([ \t]*android[ \t]*\{[ \t]*\n)",
+                     r"\1    flavorDimensions += ['main']\n", s, count=1)
+          sp = block_span(s, 'productFlavors')
+          if sp:
+              start, brace, end = sp
+              inner = s[brace + 1:end - 1]
+              inner = re.sub(r"(?m)^([ \t]*)(\w+)([ \t]*\{)[ \t]*\n",
+                             r"\1\2\3\n\1    dimension = 'main'\n", inner)
+              s = s[:brace + 1] + inner + s[end - 1:]
+
+          # 5. Removed dependency configurations.
+          for old, new in [("androidTestCompile", "androidTestImplementation"),
+                           ("testCompile", "testImplementation"),
+                           ("provided", "compileOnly"),
+                           ("compile", "api")]:
+              s = re.sub(r"(?m)^([ \t]*)" + old + r"(?=[ \t(])", r"\1" + new, s)
+
+          open(p + ".orig", "w").write(orig)
+          open(p, "w").write(s)
+          print("=== patched launcher/build.gradle ===")
+          print(s)
+          PY
+
       - name: Build release APK
         working-directory: ${{ env.APP_DIR }}
         run: |
