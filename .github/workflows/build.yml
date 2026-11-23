@@ -46,9 +46,12 @@ jobs:
             GM="$(dirname "$APP_DIR")/.gitmodules"
             URL=$(git config -f "$GM" --get submodule.VirtualApp/launcher.url || true)
             URL=${URL:-https://github.com/ozipoetra/Launcher3.git}
-            echo "Cloning launcher from $URL"
+            # The launcher's vxp branch is the one prepared for this project
+            # (VirtualCore hooks, library build setup, modern manifests).
+            echo "Cloning launcher from $URL (branch vxp)"
             rm -rf "$APP_DIR/launcher"
-            git clone --depth 1 "$URL" "$APP_DIR/launcher"
+            git clone --depth 1 -b vxp "$URL" "$APP_DIR/launcher" \
+              || git clone --depth 1 "$URL" "$APP_DIR/launcher"
           fi
           ls "$APP_DIR/launcher" | head
 
@@ -121,223 +124,6 @@ jobs:
             echo "keystore.alias_pwd=$PASS"
           } > "$APP_DIR/local.properties"
 
-      - name: Patch launcher/build.gradle for Gradle 9 / AGP 9
-        run: |
-          python3 - <<'PY'
-          import os, re
-
-          p = os.path.join(os.environ["APP_DIR"], "launcher", "build.gradle")
-          s = open(p).read()
-          orig = s
-
-          def block_span(text, name):
-              m = re.search(r'(?m)^[ \t]*' + name + r'[ \t]*\{', text)
-              if not m:
-                  return None
-              i = text.index('{', m.start())
-              depth = 0
-              for j in range(i, len(text)):
-                  if text[j] == '{':
-                      depth += 1
-                  elif text[j] == '}':
-                      depth -= 1
-                      if depth == 0:
-                          return m.start(), i, j + 1
-              return None
-
-          # 1. Drop the legacy buildscript block (old AGP 3.0.1 + jcenter()).
-          sp = block_span(s, 'buildscript')
-          if sp:
-              s = s[:sp[0]] + s[sp[2]:]
-
-          # 2. Plugins: application -> library, versions come from settings.gradle.
-          s = re.sub(r"(?m)^[ \t]*apply plugin:.*\n", "", s)
-          s = "plugins {\n    id 'com.android.library'\n    id 'com.google.protobuf'\n}\n\n" + s
-
-          # 3. Remove things that are invalid in a library / removed in AGP 9.
-          for pat in [r"jcenter\(\)", r"buildToolsVersion", r"testApplicationId",
-                      r"applicationId", r"targetSdkVersion", r"versionCode",
-                      r"versionName", r"flavorDimensions"]:
-              s = re.sub(r"(?m)^[ \t]*" + pat + r".*\n", "", s)
-
-          s = re.sub(r"compileSdkVersion\s+\S+", "compileSdk = 37", s)
-          s = re.sub(r"minSdkVersion\s+(\d+)", r"minSdk = \1", s)
-
-          # 4. Flavors: same dimension name as :app ('main') so they match by name.
-          s = re.sub(r"(?m)^([ \t]*android[ \t]*\{[ \t]*\n)",
-                     r"\1    flavorDimensions += ['main']\n", s, count=1)
-          # 4b. AGP 9 requires namespace in the build file; the old launcher
-          # kept it as package="..." in its manifest.
-          if 'namespace' not in s:
-              ns = None
-              for mf in ["AndroidManifest-common.xml", "AndroidManifest.xml"]:
-                  mp = os.path.join(os.path.dirname(p), mf)
-                  if os.path.exists(mp):
-                      mm = re.search(r'package\s*=\s*"([^"]+)"', open(mp).read())
-                      if mm:
-                          ns = mm.group(1)
-                          break
-              ns = ns or "com.android.launcher3"
-              print("namespace:", ns)
-              s = s.replace("    flavorDimensions += ['main']\n",
-                            "    namespace = '" + ns + "'\n    flavorDimensions += ['main']\n", 1)
-
-          # Inline applicationId/testApplicationId are invalid in a library.
-          s = re.sub(r"\b(?:test)?[aA]pplicationId\s*=?\s*['\"][^'\"]*['\"]", "", s)
-
-          sp = block_span(s, 'productFlavors')
-          if sp:
-              start, brace, end = sp
-              inner = s[brace + 1:end - 1]
-              out, depth, i = [], 0, 0
-              while i < len(inner):
-                  ch = inner[i]
-                  out.append(ch)
-                  if ch == '{':
-                      if depth == 0:
-                          out.append(" dimension = 'main'\n")
-                      depth += 1
-                  elif ch == '}':
-                      depth -= 1
-                  i += 1
-              s = s[:brace + 1] + "".join(out) + s[end - 1:]
-
-          # 4c. Don't rasterize vector drawables to PNG (crashes on a 0x0 vector;
-          # unnecessary since minSdk >= 26).
-          s = re.sub(r"(?m)^[ \t]*.*generatedDensities.*\n", "", s)
-          if re.search(r"(?m)^[ \t]*defaultConfig[ \t]*\{", s):
-              s = re.sub(r"(?m)^([ \t]*defaultConfig[ \t]*\{)",
-                         r"\1\n        vectorDrawables.generatedDensities = []\n", s, count=1)
-          else:
-              s = s.replace("    flavorDimensions += ['main']\n",
-                            "    flavorDimensions += ['main']\n    defaultConfig {\n        vectorDrawables.generatedDensities = []\n    }\n", 1)
-
-          # 4d. Other DSL blocks/names removed in AGP 9.
-          for name in ["dexOptions", "jackOptions"]:
-              while True:
-                  sp = block_span(s, name)
-                  if not sp:
-                      break
-                  s = s[:sp[0]] + s[sp[2]:]
-          s = re.sub(r"\blintOptions\b", "lint", s)
-          s = re.sub(r"\bpackagingOptions\b", "packaging", s)
-          s = re.sub(r"\baaptOptions\b", "androidResources", s)
-          # Match :app's minSdk so nothing is rasterized / down-leveled.
-          s = re.sub(r"minSdk = \d+", "minSdk = 31", s)
-
-          # 5. Removed dependency configurations.
-          for old, new in [("androidTestCompile", "androidTestImplementation"),
-                           ("testCompile", "testImplementation"),
-                           ("provided", "compileOnly"),
-                           ("compile", "api")]:
-              s = re.sub(r"(?m)^([ \t]*)" + old + r"(?=[ \t(])", r"\1" + new, s)
-
-          # 4e. AGP 8+ stopped generating AIDL stubs and BuildConfig by default.
-          # The launcher needs both: the launcherclient/aidlbridge interfaces are
-          # .aidl files, and several classes read BuildConfig.APPLICATION_ID.
-          if 'buildFeatures' not in s:
-              s = s.replace("    flavorDimensions += ['main']\n",
-                            "    flavorDimensions += ['main']\n"
-                            "    buildFeatures {\n"
-                            "        aidl = true\n"
-                            "        buildConfig = true\n"
-                            "    }\n", 1)
-
-          # A library's BuildConfig has no APPLICATION_ID; the sources read it
-          # (provider authorities, component checks), so supply the host app's.
-          if 'APPLICATION_ID' not in s:
-              s = re.sub(r"(?m)^([ \t]*defaultConfig[ \t]*\{)",
-                         "\\1\n        buildConfigField 'String', 'APPLICATION_ID', '\"io.va.exposed64\"'",
-                         s, count=1)
-
-          # 4f. Android 12+ requires android:exported on every component that has
-          # an intent filter; these 2018-era manifests predate that rule.
-          comp = (r'<(activity|activity-alias|service|receiver)\b([^>]*?)>'
-                  r'(\s*(?:<!--.*?-->\s*)*)(?=<intent-filter)')
-
-          def add_exported(m):
-              if 'android:exported' in m.group(2):
-                  return m.group(0)
-              return '<%s%s android:exported="true">%s' % (m.group(1), m.group(2), m.group(3))
-
-          for mf in ["AndroidManifest-common.xml", "AndroidManifest.xml"]:
-              mp = os.path.join(os.path.dirname(p), mf)
-              if not os.path.exists(mp):
-                  continue
-              x = open(mp).read()
-              y = re.sub(comp, add_exported, x, flags=re.S)
-              if y != x:
-                  open(mp, "w").write(y)
-                  print("added android:exported in", mf)
-
-          # 4g. The legacy Canvas save-flag constants were removed from the
-          # modern SDK; the one-arg save()/paint-less saveLayer() are equivalent.
-          for root_dir, _dirs, files in os.walk(os.path.join(os.path.dirname(p), "src")):
-              for fname in files:
-                  if not fname.endswith(".java"):
-                      continue
-                  fp = os.path.join(root_dir, fname)
-                  t = open(fp).read()
-                  n = re.sub(r"\.save\(\s*Canvas\.(?:MATRIX|CLIP)_SAVE_FLAG\s*\)", ".save()", t)
-                  n = re.sub(r",\s*Canvas\.(?:CLIP_TO_LAYER_SAVE_FLAG|HAS_ALPHA_LAYER_SAVE_FLAG)"
-                             r"(?:\s*\|\s*Canvas\.(?:CLIP_TO_LAYER_SAVE_FLAG|HAS_ALPHA_LAYER_SAVE_FLAG))*",
-                             "", n)
-                  if n != t:
-                      open(fp, "w").write(n)
-                      print("fixed Canvas save flags in", fname)
-
-          # 4h. aapt2 rejects a bare apostrophe in a string that isn't wrapped
-          # in double quotes; escape them (quoting protects most translations).
-          for root_dir, _dirs, files in os.walk(os.path.join(os.path.dirname(p), "res")):
-              if not os.path.basename(root_dir).startswith("values"):
-                  continue
-              for fname in files:
-                  if not fname.endswith(".xml"):
-                      continue
-                  fp = os.path.join(root_dir, fname)
-                  t = open(fp).read()
-
-                  def fix_apos(mm):
-                      inner = mm.group(2)
-                      if inner.startswith('"') and inner.endswith('"'):
-                          return mm.group(0)
-                      return mm.group(1) + re.sub(r"(?<!\\)'", r"\\'", inner) + mm.group(3)
-
-                  n = re.sub(r"(<string\b[^>]*>)(.*?)(</string>)", fix_apos, t, flags=re.S)
-                  if n != t:
-                      open(fp, "w").write(n)
-                      print("escaped apostrophes in", fp)
-
-          # 4i. These strings are defined in :app, not in the launcher library,
-          # so the launcher-qualified R reference cannot resolve.
-          for root_dir, _dirs, files in os.walk(os.path.join(os.environ["APP_DIR"],
-                                                            "app", "src", "main", "java")):
-              for fname in files:
-                  if not fname.endswith(".java"):
-                      continue
-                  fp = os.path.join(root_dir, fname)
-                  t = open(fp).read()
-                  n = t.replace("com.android.launcher3.R.string.home_menu_delete_",
-                                "R.string.home_menu_delete_")
-                  if n != t:
-                      open(fp, "w").write(n)
-                      print("fixed app R reference in", fname)
-
-          lib = os.path.join(os.environ["APP_DIR"], "lib", "build.gradle")
-          if os.path.exists(lib):
-              t = open(lib).read()
-              if "ndkVersion" not in t:
-                  t = re.sub(r"(compileSdk\s*=\s*\d+\n)",
-                             r"\1    ndkVersion = '27.2.12479018'\n", t, count=1)
-                  open(lib, "w").write(t)
-                  print("pinned ndkVersion in lib/build.gradle")
-
-          open(p + ".orig", "w").write(orig)
-          open(p, "w").write(s)
-          print("=== patched launcher/build.gradle ===")
-          print(s)
-          PY
-
       - name: Build release APK
         working-directory: ${{ env.APP_DIR }}
         run: |
@@ -356,8 +142,6 @@ jobs:
             grep -n -A25 -m1 'What went wrong' "$LOG" || tail -n 60 "$LOG"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "--- launcher/build.gradle (first 40 lines) ---"
-          head -n 40 "$APP_DIR/launcher/build.gradle" || true
 
       - name: Upload build log
         if: failure()
