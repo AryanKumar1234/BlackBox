@@ -166,6 +166,22 @@ jobs:
           # 4. Flavors: same dimension name as :app ('main') so they match by name.
           s = re.sub(r"(?m)^([ \t]*android[ \t]*\{[ \t]*\n)",
                      r"\1    flavorDimensions += ['main']\n", s, count=1)
+          # 4b. AGP 9 requires namespace in the build file; the old launcher
+          # kept it as package="..." in its manifest.
+          if 'namespace' not in s:
+              ns = None
+              for mf in ["AndroidManifest-common.xml", "AndroidManifest.xml"]:
+                  mp = os.path.join(os.path.dirname(p), mf)
+                  if os.path.exists(mp):
+                      mm = re.search(r'package\s*=\s*"([^"]+)"', open(mp).read())
+                      if mm:
+                          ns = mm.group(1)
+                          break
+              ns = ns or "com.android.launcher3"
+              print("namespace:", ns)
+              s = s.replace("    flavorDimensions += ['main']\n",
+                            "    namespace = '" + ns + "'\n    flavorDimensions += ['main']\n", 1)
+
           sp = block_span(s, 'productFlavors')
           if sp:
               start, brace, end = sp
