@@ -23,6 +23,26 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Locate project and launcher submodule
+        run: |
+          # Works whether VirtualApp/ is at the repo root or nested
+          # (e.g. VirtualXposed-vxp/VirtualApp).
+          APP_DIR=$(find . -type d -name VirtualApp -not -path '*/.git/*' -not -path '*/node_modules/*' | head -n1)
+          test -n "$APP_DIR" || { echo "VirtualApp directory not found"; find . -maxdepth 2 -not -path './.git*'; exit 1; }
+          APP_DIR=$(cd "$APP_DIR" && pwd)
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "Project at $APP_DIR"
+          # Nested checkouts don't get their submodule fetched; do it by hand.
+          if [ -z "$(ls -A "$APP_DIR/launcher" 2>/dev/null)" ]; then
+            GM="$(dirname "$APP_DIR")/.gitmodules"
+            URL=$(git config -f "$GM" --get submodule.VirtualApp/launcher.url || true)
+            URL=${URL:-https://github.com/ozipoetra/Launcher3.git}
+            echo "Cloning launcher from $URL"
+            rm -rf "$APP_DIR/launcher"
+            git clone --depth 1 "$URL" "$APP_DIR/launcher"
+          fi
+          ls "$APP_DIR/launcher" | head
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
@@ -90,10 +110,10 @@ jobs:
             echo "keystore.alias=$ALIAS"
             echo "keystore.pwd=$PASS"
             echo "keystore.alias_pwd=$PASS"
-          } > VirtualApp/local.properties
+          } > "$APP_DIR/local.properties"
 
       - name: Build release APK
-        working-directory: VirtualApp
+        working-directory: ${{ env.APP_DIR }}
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
@@ -102,9 +122,9 @@ jobs:
         id: apk
         run: |
           mkdir -p dist
-          APK=$(find VirtualApp/app/build/outputs/apk -name '*.apk' | head -n1)
+          APK=$(find "$APP_DIR/app/build/outputs/apk" -name '*.apk' | head -n1)
           test -n "$APK" || { echo "No APK produced"; exit 1; }
-          VER=$(grep -oP 'versionName = "\K[^"]+' VirtualApp/app/build.gradle)
+          VER=$(grep -oP 'versionName = "\K[^"]+' "$APP_DIR/app/build.gradle")
           OUT="dist/VirtualXposed-${VER}-build${{ github.run_number }}.apk"
           cp "$APK" "$OUT"
           echo "path=$OUT" >> "$GITHUB_OUTPUT"
