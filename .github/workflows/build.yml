@@ -232,6 +232,52 @@ jobs:
                            ("compile", "api")]:
               s = re.sub(r"(?m)^([ \t]*)" + old + r"(?=[ \t(])", r"\1" + new, s)
 
+          # 4e. AGP 8+ stopped generating AIDL stubs and BuildConfig by default.
+          # The launcher needs both: the launcherclient/aidlbridge interfaces are
+          # .aidl files, and several classes read BuildConfig.APPLICATION_ID.
+          if 'buildFeatures' not in s:
+              s = s.replace("    flavorDimensions += ['main']\n",
+                            "    flavorDimensions += ['main']\n"
+                            "    buildFeatures {\n"
+                            "        aidl = true\n"
+                            "        buildConfig = true\n"
+                            "    }\n", 1)
+
+          # 4f. Android 12+ requires android:exported on every component that has
+          # an intent filter; these 2018-era manifests predate that rule.
+          comp = (r'<(activity|activity-alias|service|receiver)\b([^>]*?)>'
+                  r'(\s*(?:<!--.*?-->\s*)*)(?=<intent-filter)')
+
+          def add_exported(m):
+              if 'android:exported' in m.group(2):
+                  return m.group(0)
+              return '<%s%s android:exported="true">%s' % (m.group(1), m.group(2), m.group(3))
+
+          for mf in ["AndroidManifest-common.xml", "AndroidManifest.xml"]:
+              mp = os.path.join(os.path.dirname(p), mf)
+              if not os.path.exists(mp):
+                  continue
+              x = open(mp).read()
+              y = re.sub(comp, add_exported, x, flags=re.S)
+              if y != x:
+                  open(mp, "w").write(y)
+                  print("added android:exported in", mf)
+
+          # 4g. The legacy Canvas save-flag constants were removed from the
+          # modern SDK; the one-arg save()/paint-less saveLayer() are equivalent.
+          for root_dir, _dirs, files in os.walk(os.path.join(os.path.dirname(p), "src")):
+              for fname in files:
+                  if not fname.endswith(".java"):
+                      continue
+                  fp = os.path.join(root_dir, fname)
+                  t = open(fp).read()
+                  n = re.sub(r"\.save\(\s*Canvas\.(?:MATRIX|CLIP)_SAVE_FLAG\s*\)", ".save()", t)
+                  n = re.sub(r"\.saveLayer\(\s*([^,()]+?)\s*,\s*Canvas\.CLIP_TO_LAYER_SAVE_FLAG\s*\|\s*Canvas\.HAS_ALPHA_LAYER_SAVE_FLAG\s*\)",
+                             r".saveLayer(\1, null)", n)
+                  if n != t:
+                      open(fp, "w").write(n)
+                      print("fixed Canvas save flags in", fname)
+
           lib = os.path.join(os.environ["APP_DIR"], "lib", "build.gradle")
           if os.path.exists(lib):
               t = open(lib).read()
