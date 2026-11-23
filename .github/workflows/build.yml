@@ -27,6 +27,15 @@ jobs:
         run: |
           # Works whether VirtualApp/ is at the repo root or nested
           # (e.g. VirtualXposed-vxp/VirtualApp).
+          # If the project was committed as a .zip instead of extracted
+          # files, unpack it first.
+          if [ -z "$(find . -type d -name VirtualApp -not -path '*/.git/*' | head -n1)" ]; then
+            for z in ./*.zip; do
+              [ -f "$z" ] || continue
+              echo "Extracting $z"
+              unzip -q -o "$z" -d "$GITHUB_WORKSPACE/_extracted"
+            done
+          fi
           APP_DIR=$(find . -type d -name VirtualApp -not -path '*/.git/*' -not -path '*/node_modules/*' | head -n1)
           test -n "$APP_DIR" || { echo "VirtualApp directory not found"; find . -maxdepth 2 -not -path './.git*'; exit 1; }
           APP_DIR=$(cd "$APP_DIR" && pwd)
