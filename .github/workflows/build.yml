@@ -308,6 +308,21 @@ jobs:
                       open(fp, "w").write(n)
                       print("escaped apostrophes in", fp)
 
+          # 4i. These strings are defined in :app, not in the launcher library,
+          # so the launcher-qualified R reference cannot resolve.
+          for root_dir, _dirs, files in os.walk(os.path.join(os.environ["APP_DIR"],
+                                                            "app", "src", "main", "java")):
+              for fname in files:
+                  if not fname.endswith(".java"):
+                      continue
+                  fp = os.path.join(root_dir, fname)
+                  t = open(fp).read()
+                  n = t.replace("com.android.launcher3.R.string.home_menu_delete_",
+                                "R.string.home_menu_delete_")
+                  if n != t:
+                      open(fp, "w").write(n)
+                      print("fixed app R reference in", fname)
+
           lib = os.path.join(os.environ["APP_DIR"], "lib", "build.gradle")
           if os.path.exists(lib):
               t = open(lib).read()
