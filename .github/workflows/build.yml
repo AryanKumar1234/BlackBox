@@ -125,7 +125,29 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          set -o pipefail
+          ./gradlew assembleRelease --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Show the real Gradle error
+        if: failure()
+        run: |
+          LOG="$RUNNER_TEMP/build.log"
+          test -f "$LOG" || exit 0
+          {
+            echo '## Gradle error'
+            echo '```'
+            grep -n -A25 -m1 'What went wrong' "$LOG" || tail -n 60 "$LOG"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "--- launcher/build.gradle (first 40 lines) ---"
+          head -n 40 "$APP_DIR/launcher/build.gradle" || true
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: ${{ runner.temp }}/build.log
 
       - name: Collect APK
         id: apk
