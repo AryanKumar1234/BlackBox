@@ -243,6 +243,13 @@ jobs:
                             "        buildConfig = true\n"
                             "    }\n", 1)
 
+          # A library's BuildConfig has no APPLICATION_ID; the sources read it
+          # (provider authorities, component checks), so supply the host app's.
+          if 'APPLICATION_ID' not in s:
+              s = re.sub(r"(?m)^([ \t]*defaultConfig[ \t]*\{)",
+                         "\\1\n        buildConfigField 'String', 'APPLICATION_ID', '\"io.va.exposed64\"'",
+                         s, count=1)
+
           # 4f. Android 12+ requires android:exported on every component that has
           # an intent filter; these 2018-era manifests predate that rule.
           comp = (r'<(activity|activity-alias|service|receiver)\b([^>]*?)>'
@@ -272,8 +279,9 @@ jobs:
                   fp = os.path.join(root_dir, fname)
                   t = open(fp).read()
                   n = re.sub(r"\.save\(\s*Canvas\.(?:MATRIX|CLIP)_SAVE_FLAG\s*\)", ".save()", t)
-                  n = re.sub(r"\.saveLayer\(\s*([^,()]+?)\s*,\s*Canvas\.CLIP_TO_LAYER_SAVE_FLAG\s*\|\s*Canvas\.HAS_ALPHA_LAYER_SAVE_FLAG\s*\)",
-                             r".saveLayer(\1, null)", n)
+                  n = re.sub(r",\s*Canvas\.(?:CLIP_TO_LAYER_SAVE_FLAG|HAS_ALPHA_LAYER_SAVE_FLAG)"
+                             r"(?:\s*\|\s*Canvas\.(?:CLIP_TO_LAYER_SAVE_FLAG|HAS_ALPHA_LAYER_SAVE_FLAG))*",
+                             "", n)
                   if n != t:
                       open(fp, "w").write(n)
                       print("fixed Canvas save flags in", fname)
